@@ -386,6 +386,61 @@ border-color:#fff;
 box-shadow:0 0 18px #00bcff66;
 }
 
+.topLogout{
+position:fixed;
+top:14px;
+right:18px;
+z-index:50;
+background:#111;
+color:#00bcff;
+border:1px solid #00bcff66;
+padding:8px 14px;
+border-radius:999px;
+font-size:12px;
+}
+
+.poweredFooter{
+position:fixed;
+right:10px;
+bottom:6px;
+z-index:40;
+font-size:9px;
+color:#00bcff;
+opacity:.85;
+pointer-events:none;
+}
+
+.memberRow{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:12px;
+padding:10px 0;
+border-bottom:1px solid #222;
+}
+
+.memberRow:last-child{
+border-bottom:0;
+}
+
+.memberActions{
+display:flex;
+gap:8px;
+flex-wrap:wrap;
+justify-content:flex-end;
+}
+
+.smallBtn{
+padding:7px 10px;
+font-size:12px;
+border-radius:8px;
+}
+
+.loadingPage{
+opacity:.75;
+padding:20px;
+}
+
 </style>
 
 </head>
@@ -536,6 +591,9 @@ id="content">
 
 </div>
 
+<button id="topLogoutBtn" class="topLogout hidden" onclick="sair()">LOGOUT</button>
+<div class="poweredFooter">©Nextage - powered by Jinx</div>
+
 <div id="recrutamentoModal" class="modalOverlay hidden">
   <div class="modalBox">
     <h2>Registrar recrutamento</h2>
@@ -566,6 +624,8 @@ const db = supabase.createClient(
 let usuarioAtual = null;
 let config = {};
 let paginaAtual = "angels";
+let configCarregada = false;
+let navegacaoToken = 0;
 
 
 const NOMES_CATEGORIAS_PADRAO = {
@@ -714,6 +774,7 @@ async function carregarConfig(){
     .single();
 
   config = data || {};
+  configCarregada = true;
   aplicarNomesCategorias();
 
   if(config.fundo){
@@ -794,6 +855,30 @@ async function cadastrar(){
   mostrarLogin();
 }
 
+function mostrarSiteLogado(){
+  loginPage.classList.add("hidden");
+  site.classList.remove("hidden");
+  if(topLogoutBtn) topLogoutBtn.classList.remove("hidden");
+
+  if(usuarioAtual && usuarioAtual.cargo === "admin"){
+    btnLogs.classList.remove("hidden");
+    btnGerenciar.classList.remove("hidden");
+  }else{
+    btnLogs.classList.add("hidden");
+    btnGerenciar.classList.add("hidden");
+  }
+}
+
+function salvarSessao(){
+  if(usuarioAtual){
+    localStorage.setItem("nextage_usuario_logado", JSON.stringify(usuarioAtual));
+  }
+}
+
+function limparSessao(){
+  localStorage.removeItem("nextage_usuario_logado");
+}
+
 
 async function login(){
   const usuario = loginUser.value.trim();
@@ -817,17 +902,8 @@ async function login(){
   }
 
   usuarioAtual = data;
-
-  loginPage.classList.add("hidden");
-  site.classList.remove("hidden");
-
-  if(usuarioAtual.cargo === "admin"){
-    btnLogs.classList.remove("hidden");
-    btnGerenciar.classList.remove("hidden");
-  }else{
-    btnLogs.classList.add("hidden");
-    btnGerenciar.classList.add("hidden");
-  }
+  salvarSessao();
+  mostrarSiteLogado();
 
   await criarLog(`Login realizado: ${usuarioAtual.usuario}`);
 
@@ -836,31 +912,44 @@ async function login(){
 
 
 async function sair(){
-  await criarLog(`Logout realizado: ${usuarioAtual.usuario}`);
+  if(usuarioAtual){
+    await criarLog(`Logout realizado: ${usuarioAtual.usuario}`);
+  }
 
   usuarioAtual = null;
+  limparSessao();
 
   site.classList.add("hidden");
   loginPage.classList.remove("hidden");
+  if(topLogoutBtn) topLogoutBtn.classList.add("hidden");
 }
 
 
 async function abrir(pagina){
   paginaAtual = pagina;
+  localStorage.setItem("nextage_ultima_pagina", pagina);
+  const token = ++navegacaoToken;
 
-  await carregarConfig();
+  aplicarNomesCategorias();
 
-  if(pagina === "angels") renderPosts("angels", nomeCategoria("angels"), true);
-  if(pagina === "eventos") renderPosts("eventos", nomeCategoria("eventos"), false);
-  if(pagina === "virtus") renderVirtus();
-  if(pagina === "recrutamento") renderRecrutamento();
-  if(pagina === "elite") renderElite();
-  if(pagina === "sorteio") renderSorteio();
-  if(pagina === "logs") renderLogs();
-  if(pagina === "gerenciar") renderGerenciar();
+  if(!configCarregada){
+    await carregarConfig();
+    if(token !== navegacaoToken) return;
+  }
+
+  content.innerHTML = `<div class="loadingPage">Carregando...</div>`;
+
+  if(pagina === "angels") return renderPosts("angels", nomeCategoria("angels"), true);
+  if(pagina === "eventos") return renderPosts("eventos", nomeCategoria("eventos"), false);
+  if(pagina === "virtus") return renderVirtus();
+  if(pagina === "recrutamento") return renderRecrutamento();
+  if(pagina === "elite") return renderElite();
+  if(pagina === "sorteio") return renderSorteio();
+  if(pagina === "logs") return renderLogs();
+  if(pagina === "gerenciar") return renderGerenciar();
 
   const categoriaExtra = pegarCategoriasExtras().find(cat => cat.chave === pagina);
-  if(categoriaExtra) renderPosts(categoriaExtra.chave, categoriaExtra.nome, false);
+  if(categoriaExtra) return renderPosts(categoriaExtra.chave, categoriaExtra.nome, false);
 }
 
 
@@ -1671,14 +1760,17 @@ async function renderGerenciar(){
   `;
 
   aprovados.data.forEach(u => {
+    const isAdmin = u.cargo === "admin";
     html += `
-      <p>
-        <b>${u.usuario}</b>
-        —
-        ID: ${u.game_id}
-        —
-        ${u.cargo}
-      </p>
+      <div class="memberRow">
+        <div>
+          <b>${escaparHTML(u.usuario)}</b> — ID: ${escaparHTML(u.game_id)} — ${escaparHTML(u.cargo)}
+        </div>
+        <div class="memberActions">
+          <button class="smallBtn" onclick="alterarSenhaUsuario('${u.id}', '${escaparHTML(u.usuario)}')">Alterar senha</button>
+          ${!isAdmin ? `<button class="delete smallBtn" onclick="excluirUsuarioAprovado('${u.id}', '${escaparHTML(u.usuario)}')">🗑️</button>` : ""}
+        </div>
+      </div>
     `;
   });
 
@@ -1785,6 +1877,62 @@ async function excluirSolicitacao(id, usuario){
 }
 
 
+async function excluirUsuarioAprovado(id, usuario){
+  if(!confirm(`Excluir o cadastro de ${usuario}? Essa pessoa perderá o acesso ao site.`)) return;
+
+  const { data: alvo } = await db
+    .from("usuarios")
+    .select("cargo")
+    .eq("id", id)
+    .single();
+
+  if(alvo && alvo.cargo === "admin"){
+    alert("O cadastro administrativo não pode ser excluído.");
+    return;
+  }
+
+  const { error } = await db
+    .from("usuarios")
+    .delete()
+    .eq("id", id);
+
+  if(error){
+    alert(error.message);
+    return;
+  }
+
+  await criarLog(`Cadastro excluído: ${usuario}`);
+  renderGerenciar();
+}
+
+async function alterarSenhaUsuario(id, usuario){
+  const novaSenha = prompt(`Digite a nova senha para ${usuario}:`);
+
+  if(novaSenha === null) return;
+
+  const senhaLimpa = novaSenha.trim();
+
+  if(!senhaLimpa){
+    alert("Digite uma senha válida.");
+    return;
+  }
+
+  const { error } = await db
+    .from("usuarios")
+    .update({ senha: senhaLimpa })
+    .eq("id", id);
+
+  if(error){
+    alert(error.message);
+    return;
+  }
+
+  await criarLog(`Senha alterada para: ${usuario}`);
+  alert("Senha alterada com sucesso.");
+  renderGerenciar();
+}
+
+
 async function salvarLinks(){
   const { error } = await db
     .from("configuracoes")
@@ -1849,6 +1997,29 @@ async function salvarImagens(){
 async function iniciar(){
   aplicarNomesCategorias();
   await carregarConfig();
+
+  try{
+    const sessao = JSON.parse(localStorage.getItem("nextage_usuario_logado") || "null");
+    if(sessao && sessao.usuario){
+      const { data } = await db
+        .from("usuarios")
+        .select("*")
+        .eq("id", sessao.id)
+        .eq("aprovado", true)
+        .single();
+
+      if(data){
+        usuarioAtual = data;
+        salvarSessao();
+        mostrarSiteLogado();
+        abrir(localStorage.getItem("nextage_ultima_pagina") || "angels");
+      }else{
+        limparSessao();
+      }
+    }
+  }catch(e){
+    limparSessao();
+  }
 }
 
 
