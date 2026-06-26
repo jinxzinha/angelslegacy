@@ -436,6 +436,52 @@ font-size:12px;
 border-radius:8px;
 }
 
+
+.confirmText{
+color:#fff;
+font-size:16px;
+line-height:1.4;
+margin-bottom:18px;
+}
+
+.categoryEditRow{
+display:grid;
+grid-template-columns:1fr auto;
+gap:8px;
+align-items:center;
+margin:8px 0;
+}
+
+.categoryEditRow input{
+margin:0;
+}
+
+.categoryEditRow .delete{
+padding:12px 14px;
+}
+
+.gestaoFormGrid{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:10px;
+}
+
+.gestaoFormGrid select{
+width:100%;
+padding:12px;
+margin:8px 0;
+background:#111;
+border:1px solid #333;
+border-radius:10px;
+color:#00bcff;
+}
+
+.dividerLine{
+height:1px;
+background:#333;
+margin:18px 0;
+}
+
 .loadingPage{
 opacity:.75;
 padding:20px;
@@ -611,6 +657,16 @@ id="content">
   </div>
 </div>
 
+<div id="confirmModal" class="modalOverlay hidden">
+  <div class="modalBox">
+    <div class="confirmText">Tem certeza que deseja excluir?</div>
+    <div class="modalActions">
+      <button id="confirmNoBtn" class="delete">Não</button>
+      <button id="confirmYesBtn">Sim</button>
+    </div>
+  </div>
+</div>
+
 <script>
 
 const SUPABASE_URL = "https://umoadjffjupzakioudnj.supabase.co";
@@ -626,6 +682,7 @@ let config = {};
 let paginaAtual = "angels";
 let configCarregada = false;
 let navegacaoToken = 0;
+const STORAGE_BUCKET = "anexos";
 
 
 const NOMES_CATEGORIAS_PADRAO = {
@@ -675,6 +732,38 @@ function salvarCategoriasExtrasLista(lista){
   localStorage.setItem("nextage_categorias_extras", JSON.stringify(lista));
 }
 
+function podeGerenciarElite(){
+  return usuarioAtual && (usuarioAtual.cargo === "admin" || usuarioAtual.cargo === "elite");
+}
+
+function apenasAdmin(){
+  return usuarioAtual && usuarioAtual.cargo === "admin";
+}
+
+function confirmarExclusao(){
+  return new Promise((resolve) => {
+    const modal = document.getElementById("confirmModal");
+    const yes = document.getElementById("confirmYesBtn");
+    const no = document.getElementById("confirmNoBtn");
+
+    if(!modal || !yes || !no){
+      resolve(window.confirm("Tem certeza que deseja excluir?"));
+      return;
+    }
+
+    const finalizar = (valor) => {
+      modal.classList.add("hidden");
+      yes.onclick = null;
+      no.onclick = null;
+      resolve(valor);
+    };
+
+    yes.onclick = () => finalizar(true);
+    no.onclick = () => finalizar(false);
+    modal.classList.remove("hidden");
+  });
+}
+
 function adicionarCategoriaLateral(){
   const nome = novaCategoriaNome.value.trim();
 
@@ -706,8 +795,8 @@ function adicionarCategoriaLateral(){
   renderGerenciar();
 }
 
-function excluirCategoriaLateral(chave){
-  if(!confirm("Excluir essa categoria da lateral? As postagens antigas continuam salvas no banco, mas a categoria sai do menu.")) return;
+async function excluirCategoriaLateral(chave){
+  if(!(await confirmarExclusao())) return;
 
   const extras = pegarCategoriasExtras().filter(c => c.chave !== chave);
   salvarCategoriasExtrasLista(extras);
@@ -956,6 +1045,7 @@ async function abrir(pagina){
 function podePostar(categoria){
   if(usuarioAtual.cargo === "admin") return true;
   if(categoria === "virtus" && usuarioAtual.cargo === "virtus") return true;
+  if(categoria === "elite" && usuarioAtual.cargo === "elite") return true;
   return false;
 }
 
@@ -1058,6 +1148,63 @@ function renderMidia(midia, tipo){
 }
 
 
+
+function nomeArquivoSeguro(nome){
+  return String(nome || "arquivo")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+async function uploadArquivo(file, progressoId = null, pasta = "posts"){
+  if(!file){
+    return { midia: null, tipo: null };
+  }
+
+  if(progressoId){
+    atualizarUpload(progressoId, 10, "Preparando anexo...");
+  }
+
+  const caminho = `${pasta}/${Date.now()}_${Math.random().toString(36).slice(2)}_${nomeArquivoSeguro(file.name)}`;
+
+  try{
+    if(progressoId){
+      atualizarUpload(progressoId, 45, "Enviando anexo...");
+    }
+
+    const { error } = await db.storage
+      .from(STORAGE_BUCKET)
+      .upload(caminho, file, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: file.type || "application/octet-stream"
+      });
+
+    if(error){
+      throw error;
+    }
+
+    const { data } = db.storage
+      .from(STORAGE_BUCKET)
+      .getPublicUrl(caminho);
+
+    if(progressoId){
+      atualizarUpload(progressoId, 100, "Anexo enviado.");
+    }
+
+    return {
+      midia: data.publicUrl,
+      tipo: file.type
+    };
+  }catch(e){
+    console.warn("Falha no Supabase Storage. Usando Base64 como reserva:", e);
+    if(progressoId){
+      atualizarUpload(progressoId, 55, "Storage indisponível. Salvando em modo compatível...");
+    }
+    return arquivoParaBase64(file, progressoId);
+  }
+}
+
 function arquivoParaBase64(file, progressoId = null){
   return new Promise((resolve, reject) => {
     if(!file){
@@ -1133,9 +1280,9 @@ async function renderPosts(categoria, titulo, mostrarCapa){
       <div class="card post">
         <p class="formattedText">${formatarTexto(post.texto)}</p>
         ${renderMidia(post.midia, post.tipo_midia)}
-        ${podePostar(categoria) ? `
+        ${apenasAdmin() ? `
           <br><br>
-          <button class="delete" onclick="excluirPost(${post.id})">Excluir</button>
+          <button class="delete" onclick="excluirPost(${post.id})">EXCLUIR POST</button>
         ` : ""}
       </div>
     `;
@@ -1161,7 +1308,7 @@ async function criarPost(categoria){
   let arquivo;
 
   try{
-    arquivo = await arquivoParaBase64(file, "uploadPost");
+    arquivo = await uploadArquivo(file, "uploadPost", categoria);
   }catch(e){
     alert(e.message);
     if(typeof btnPublicarPost !== "undefined") btnPublicarPost.disabled = false;
@@ -1191,7 +1338,7 @@ async function criarPost(categoria){
 
 
 async function excluirPost(id){
-  if(!confirm("Excluir postagem?")) return;
+  if(!(await confirmarExclusao())) return;
 
   const { error } = await db
     .from("posts")
@@ -1247,9 +1394,9 @@ async function renderVirtus(){
       <div class="card post">
         <p class="formattedText">${formatarTexto(post.texto)}</p>
         ${renderMidia(post.midia, post.tipo_midia)}
-        ${podePostar("virtus") ? `
+        ${apenasAdmin() ? `
           <br><br>
-          <button class="delete" onclick="excluirPost(${post.id})">Excluir</button>
+          <button class="delete" onclick="excluirPost(${post.id})">EXCLUIR POST</button>
         ` : ""}
       </div>
     `;
@@ -1358,6 +1505,14 @@ async function renderElite(){
     .select("*")
     .order("criado_em", { ascending: false });
 
+  const elitePostsBusca = await db
+    .from("posts")
+    .select("*")
+    .eq("categoria", "elite")
+    .order("criado_em", { ascending: false });
+
+  const elitePosts = elitePostsBusca.data || [];
+
   const total = data ? data.length : 0;
   const vitorias = data ? data.filter(e => e.resultado === "VITÓRIA").length : 0;
   const derrotas = data ? data.filter(e => e.resultado === "DERROTA").length : 0;
@@ -1393,6 +1548,28 @@ async function renderElite(){
       <p class="red">Derrotas: ${derrotas} (${pctDerrota}%)</p>
     </div>
 
+    ${podePostar("elite") ? `
+      <div class="card">
+        <h2>Nova postagem</h2>
+        <textarea id="postTexto" placeholder="Texto da postagem. Use **palavra** para negrito."></textarea>
+        <input id="postArquivo" type="file" accept="image/png,image/jpg,image/jpeg,image/gif,video/*">
+        ${uploadBox("uploadPost")}
+        <button id="btnPublicarPost" onclick="criarPost('elite')">Publicar</button>
+      </div>
+    ` : ""}
+
+    <div class="card">
+      <h2>Postagens</h2>
+      ${elitePosts.length ? elitePosts.map(post => `
+        <div class="card post">
+          <p class="formattedText">${formatarTexto(post.texto)}</p>
+          ${renderMidia(post.midia, post.tipo_midia)}
+          ${apenasAdmin() ? `<br><br><button class="delete" onclick="excluirPost(${post.id})">EXCLUIR POST</button>` : ""}
+        </div>
+      `).join("") : "<p>Nenhuma postagem ainda.</p>"}
+    </div>
+
+    ${podeGerenciarElite() ? `
     <div class="card">
       <h2>Registrar dominação</h2>
 
@@ -1415,6 +1592,7 @@ async function renderElite(){
 
       <button onclick="registrarElite()">Registrar</button>
     </div>
+    ` : ""}
 
     <div class="card">
       <h2>Histórico</h2>
@@ -1449,6 +1627,11 @@ async function renderElite(){
 
 
 async function registrarElite(){
+  if(!podeGerenciarElite()){
+    alert("Apenas perfis de gestão da Elite ou o administrador podem registrar dominação.");
+    return;
+  }
+
   const resultado = document.querySelector('input[name="eliteResultado"]:checked');
 
   if(
@@ -1569,7 +1752,7 @@ async function criarSorteio(){
   let arquivo;
 
   try{
-    arquivo = await arquivoParaBase64(file, "uploadSorteio");
+    arquivo = await uploadArquivo(file, "uploadSorteio", "sorteios");
   }catch(e){
     alert(e.message);
     if(typeof btnCriarSorteio !== "undefined") btnCriarSorteio.disabled = false;
@@ -1649,7 +1832,7 @@ async function gerarSorteio(id){
 
 
 async function excluirSorteio(id){
-  if(!confirm("Excluir sorteio?")) return;
+  if(!(await confirmarExclusao())) return;
 
   await db
     .from("participantes_sorteio")
@@ -1756,10 +1939,16 @@ async function renderGerenciar(){
     </div>
 
     <div class="card">
-      <h2>Membros aprovados</h2>
+      <h2>Membros Gestão</h2>
   `;
 
-  aprovados.data.forEach(u => {
+  const gestao = (aprovados.data || []).filter(u => u.cargo === "admin" || u.cargo === "virtus" || u.cargo === "elite");
+
+  if(!gestao.length){
+    html += `<p>Nenhum perfil de gestão cadastrado.</p>`;
+  }
+
+  gestao.forEach(u => {
     const isAdmin = u.cargo === "admin";
     html += `
       <div class="memberRow">
@@ -1775,8 +1964,46 @@ async function renderGerenciar(){
   });
 
   html += `
+      <div class="dividerLine"></div>
+      <h2>CRIAR PERFIL GESTÃO</h2>
+      <div class="gestaoFormGrid">
+        <input id="gestaoUsuario" placeholder="Usuário">
+        <input id="gestaoID" placeholder="ID">
+        <input id="gestaoSenha" type="password" placeholder="Senha">
+        <select id="gestaoCargo">
+          <option value="virtus">Gestão VIRTUS RP</option>
+          <option value="elite">Gestão ELITE LEGACY</option>
+        </select>
+      </div>
+      <button onclick="criarPerfilGestao()">Criar perfil gestão</button>
     </div>
 
+    <div class="card">
+      <h2>Membros aprovados</h2>
+  `;
+
+  const membrosComuns = (aprovados.data || []).filter(u => u.cargo !== "admin" && u.cargo !== "virtus" && u.cargo !== "elite");
+
+  if(!membrosComuns.length){
+    html += `<p>Nenhum membro comum aprovado.</p>`;
+  }
+
+  membrosComuns.forEach(u => {
+    html += `
+      <div class="memberRow">
+        <div>
+          <b>${escaparHTML(u.usuario)}</b> — ID: ${escaparHTML(u.game_id)} — ${escaparHTML(u.cargo)}
+        </div>
+        <div class="memberActions">
+          <button class="smallBtn" onclick="alterarSenhaUsuario('${u.id}', '${escaparHTML(u.usuario)}')">Alterar senha</button>
+          <button class="delete smallBtn" onclick="excluirUsuarioAprovado('${u.id}', '${escaparHTML(u.usuario)}')">🗑️</button>
+        </div>
+      </div>
+    `;
+  });
+
+  html += `
+    </div>
 
     <div class="card">
       <h2>Editar nomes das categorias laterais</h2>
@@ -1801,9 +2028,9 @@ async function renderGerenciar(){
 
       <h2 style="margin-top:25px;">Categorias criadas</h2>
       ${pegarCategoriasExtras().length ? pegarCategoriasExtras().map(cat => `
-        <div class="card">
-          <p><b>${escaparHTML(cat.nome)}</b></p>
-          <button class="delete" onclick="excluirCategoriaLateral('${cat.chave}')">Excluir categoria</button>
+        <div class="categoryEditRow">
+          <input value="${escaparHTML(cat.nome)}" readonly>
+          <button class="delete" title="Excluir categoria" onclick="excluirCategoriaLateral('${cat.chave}')">🗑️</button>
         </div>
       `).join("") : "<p>Nenhuma categoria extra criada ainda.</p>"}
     </div>
@@ -1843,6 +2070,46 @@ async function renderGerenciar(){
 }
 
 
+async function criarPerfilGestao(){
+  const usuario = gestaoUsuario.value.trim();
+  const game_id = gestaoID.value.trim();
+  const senha = gestaoSenha.value.trim();
+  const cargo = gestaoCargo.value;
+
+  if(!usuario || !game_id || !senha){
+    alert("Preencha usuário, ID e senha.");
+    return;
+  }
+
+  const existe = await db
+    .from("usuarios")
+    .select("id")
+    .eq("usuario", usuario);
+
+  if(existe.data && existe.data.length > 0){
+    alert("Esse usuário já existe.");
+    return;
+  }
+
+  const { error } = await db.from("usuarios").insert({
+    usuario,
+    senha,
+    game_id,
+    cargo,
+    aprovado: true
+  });
+
+  if(error){
+    alert(error.message);
+    return;
+  }
+
+  await criarLog(`Perfil de gestão criado: ${usuario} — ${cargo}`);
+  alert("Perfil de gestão criado com sucesso.");
+  renderGerenciar();
+}
+
+
 async function aprovarUsuario(id, usuario){
   const { error } = await db
     .from("usuarios")
@@ -1860,7 +2127,7 @@ async function aprovarUsuario(id, usuario){
 
 
 async function excluirSolicitacao(id, usuario){
-  if(!confirm("Cancelar e excluir essa solicitação de cadastro?")) return;
+  if(!(await confirmarExclusao())) return;
 
   const { error } = await db
     .from("usuarios")
@@ -1878,7 +2145,7 @@ async function excluirSolicitacao(id, usuario){
 
 
 async function excluirUsuarioAprovado(id, usuario){
-  if(!confirm(`Excluir o cadastro de ${usuario}? Essa pessoa perderá o acesso ao site.`)) return;
+  if(!(await confirmarExclusao())) return;
 
   const { data: alvo } = await db
     .from("usuarios")
@@ -1959,10 +2226,10 @@ async function salvarLinks(){
 
 
 async function salvarImagens(){
-  const avatar = avatarFile.files[0] ? await arquivoParaBase64(avatarFile.files[0]) : null;
-  const capa = capaFile.files[0] ? await arquivoParaBase64(capaFile.files[0]) : null;
-  const capaElite = capaEliteFile.files[0] ? await arquivoParaBase64(capaEliteFile.files[0]) : null;
-  const fundo = fundoFile.files[0] ? await arquivoParaBase64(fundoFile.files[0]) : null;
+  const avatar = avatarFile.files[0] ? await uploadArquivo(avatarFile.files[0], null, "config") : null;
+  const capa = capaFile.files[0] ? await uploadArquivo(capaFile.files[0], null, "config") : null;
+  const capaElite = capaEliteFile.files[0] ? await uploadArquivo(capaEliteFile.files[0], null, "config") : null;
+  const fundo = fundoFile.files[0] ? await uploadArquivo(fundoFile.files[0], null, "config") : null;
 
   const atualizacao = {};
 
