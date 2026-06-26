@@ -505,6 +505,7 @@ Solicitar cadastro
 
 <button onclick="abrir('virtus')"><span id="menuVirtus">VIRTUS RP</span></button>
 
+<div id="categoriasExtrasMenu"></div>
 
 
 <button id="btnLogs" class="hidden" onclick="abrir('logs')"><span id="menuLogs">LOGS</span></button>
@@ -591,6 +592,75 @@ function nomeCategoria(chave){
   return pegarNomesCategorias()[chave] || NOMES_CATEGORIAS_PADRAO[chave] || chave;
 }
 
+function normalizarChaveCategoria(nome){
+  return "custom_" + String(nome || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function pegarCategoriasExtras(){
+  try{
+    const extras = JSON.parse(localStorage.getItem("nextage_categorias_extras") || "[]");
+    return Array.isArray(extras) ? extras.filter(c => c && c.chave && c.nome) : [];
+  }catch(e){
+    return [];
+  }
+}
+
+function salvarCategoriasExtrasLista(lista){
+  localStorage.setItem("nextage_categorias_extras", JSON.stringify(lista));
+}
+
+function adicionarCategoriaLateral(){
+  const nome = novaCategoriaNome.value.trim();
+
+  if(!nome){
+    alert("Digite o nome da nova categoria.");
+    return;
+  }
+
+  const chave = normalizarChaveCategoria(nome);
+
+  if(chave === "custom_"){
+    alert("Digite um nome válido para a categoria.");
+    return;
+  }
+
+  const extras = pegarCategoriasExtras();
+  const reservadas = Object.keys(NOMES_CATEGORIAS_PADRAO);
+
+  if(reservadas.includes(chave) || extras.some(c => c.chave === chave)){
+    alert("Já existe uma categoria com esse nome.");
+    return;
+  }
+
+  extras.push({ chave, nome });
+  salvarCategoriasExtrasLista(extras);
+  novaCategoriaNome.value = "";
+  aplicarNomesCategorias();
+  alert("Categoria adicionada na lateral.");
+  renderGerenciar();
+}
+
+function excluirCategoriaLateral(chave){
+  if(!confirm("Excluir essa categoria da lateral? As postagens antigas continuam salvas no banco, mas a categoria sai do menu.")) return;
+
+  const extras = pegarCategoriasExtras().filter(c => c.chave !== chave);
+  salvarCategoriasExtrasLista(extras);
+
+  if(paginaAtual === chave){
+    abrir("angels");
+    return;
+  }
+
+  aplicarNomesCategorias();
+  renderGerenciar();
+}
+
 function aplicarNomesCategorias(){
   const nomes = pegarNomesCategorias();
   const mapa = {
@@ -608,6 +678,13 @@ function aplicarNomesCategorias(){
     const el = document.getElementById(id);
     if(el) el.textContent = texto;
   });
+
+  const extrasMenu = document.getElementById("categoriasExtrasMenu");
+  if(extrasMenu){
+    extrasMenu.innerHTML = pegarCategoriasExtras()
+      .map(cat => `<button onclick="abrir('${cat.chave}')"><span>${escaparHTML(cat.nome)}</span></button>`)
+      .join("");
+  }
 }
 
 function salvarNomesCategorias(){
@@ -781,6 +858,9 @@ async function abrir(pagina){
   if(pagina === "sorteio") renderSorteio();
   if(pagina === "logs") renderLogs();
   if(pagina === "gerenciar") renderGerenciar();
+
+  const categoriaExtra = pegarCategoriasExtras().find(cat => cat.chave === pagina);
+  if(categoriaExtra) renderPosts(categoriaExtra.chave, categoriaExtra.nome, false);
 }
 
 
@@ -1619,6 +1699,21 @@ async function renderGerenciar(){
       <input id="nomeCatGerenciar" placeholder="Gerenciar" value="${nomeCategoria("gerenciar")}">
 
       <button onclick="salvarNomesCategorias()">Salvar nomes das categorias</button>
+    </div>
+
+    <div class="card">
+      <h2>Adicionar categoria na lateral</h2>
+      <p class="logs">Toda categoria criada aqui funciona igual a categoria NEXTAGE: abre uma página com postagens, texto e anexos.</p>
+      <input id="novaCategoriaNome" placeholder="Nome da nova categoria">
+      <button onclick="adicionarCategoriaLateral()">Adicionar categoria</button>
+
+      <h2 style="margin-top:25px;">Categorias criadas</h2>
+      ${pegarCategoriasExtras().length ? pegarCategoriasExtras().map(cat => `
+        <div class="card">
+          <p><b>${escaparHTML(cat.nome)}</b></p>
+          <button class="delete" onclick="excluirCategoriaLateral('${cat.chave}')">Excluir categoria</button>
+        </div>
+      `).join("") : "<p>Nenhuma categoria extra criada ainda.</p>"}
     </div>
 
     <div class="card">
