@@ -682,6 +682,7 @@ let config = {};
 let paginaAtual = "angels";
 let configCarregada = false;
 let navegacaoToken = 0;
+let categoriasLaterais = [];
 const STORAGE_BUCKET = "anexos";
 
 
@@ -696,17 +697,48 @@ const NOMES_CATEGORIAS_PADRAO = {
   gerenciar: "GERENCIAR"
 };
 
-function pegarNomesCategorias(){
+async function carregarCategorias(){
   try{
-    const salvos = JSON.parse(localStorage.getItem("nextage_nomes_categorias") || "{}");
-    return { ...NOMES_CATEGORIAS_PADRAO, ...salvos };
+    const { data, error } = await db
+      .from("categorias_laterais")
+      .select("*")
+      .eq("visivel", true)
+      .order("ordem", { ascending: true });
+
+    if(error) throw error;
+
+    if(data && data.length){
+      categoriasLaterais = data.map(c => ({
+        chave: c.chave,
+        nome: c.nome,
+        sistema: !!c.sistema,
+        ordem: c.ordem || 0
+      }));
+      return;
+    }
   }catch(e){
-    return { ...NOMES_CATEGORIAS_PADRAO };
+    console.warn("Tabela categorias_laterais ainda não encontrada. Usando categorias padrão.", e);
   }
+
+  categoriasLaterais = Object.entries(NOMES_CATEGORIAS_PADRAO).map(([chave, nome], i) => ({
+    chave,
+    nome,
+    sistema: true,
+    ordem: i + 1
+  }));
+}
+
+function pegarNomesCategorias(){
+  const nomes = { ...NOMES_CATEGORIAS_PADRAO };
+  categoriasLaterais.forEach(cat => {
+    nomes[cat.chave] = cat.nome;
+  });
+  return nomes;
 }
 
 function nomeCategoria(chave){
-  return pegarNomesCategorias()[chave] || NOMES_CATEGORIAS_PADRAO[chave] || chave;
+  const cat = categoriasLaterais.find(c => c.chave === chave);
+  return cat ? cat.nome : (NOMES_CATEGORIAS_PADRAO[chave] || chave);
 }
 
 function normalizarChaveCategoria(nome){
@@ -720,16 +752,7 @@ function normalizarChaveCategoria(nome){
 }
 
 function pegarCategoriasExtras(){
-  try{
-    const extras = JSON.parse(localStorage.getItem("nextage_categorias_extras") || "[]");
-    return Array.isArray(extras) ? extras.filter(c => c && c.chave && c.nome) : [];
-  }catch(e){
-    return [];
-  }
-}
-
-function salvarCategoriasExtrasLista(lista){
-  localStorage.setItem("nextage_categorias_extras", JSON.stringify(lista));
+  return categoriasLaterais.filter(c => !c.sistema);
 }
 
 function podeGerenciarElite(){
@@ -764,7 +787,7 @@ function confirmarExclusao(){
   });
 }
 
-function adicionarCategoriaLateral(){
+async function adicionarCategoriaLateral(){
   const nome = novaCategoriaNome.value.trim();
 
   if(!nome){
@@ -779,27 +802,53 @@ function adicionarCategoriaLateral(){
     return;
   }
 
-  const extras = pegarCategoriasExtras();
   const reservadas = Object.keys(NOMES_CATEGORIAS_PADRAO);
 
-  if(reservadas.includes(chave) || extras.some(c => c.chave === chave)){
+  if(reservadas.includes(chave) || categoriasLaterais.some(c => c.chave === chave)){
     alert("Já existe uma categoria com esse nome.");
     return;
   }
 
-  extras.push({ chave, nome });
-  salvarCategoriasExtrasLista(extras);
+  const maiorOrdem = categoriasLaterais.reduce((max, cat) => Math.max(max, Number(cat.ordem || 0)), 0);
+
+  const { error } = await db.from("categorias_laterais").insert({
+    chave,
+    nome,
+    sistema: false,
+    ordem: maiorOrdem + 1,
+    visivel: true
+  });
+
+  if(error){
+    alert("Erro ao criar categoria. Confira se a tabela categorias_laterais foi criada no Supabase.");
+    return;
+  }
+
+  await criarLog(`Categoria lateral criada: ${nome}`);
   novaCategoriaNome.value = "";
+  await carregarCategorias();
   aplicarNomesCategorias();
-  alert("Categoria adicionada na lateral.");
   renderGerenciar();
 }
 
 async function excluirCategoriaLateral(chave){
   if(!(await confirmarExclusao())) return;
 
-  const extras = pegarCategoriasExtras().filter(c => c.chave !== chave);
-  salvarCategoriasExtrasLista(extras);
+  const cat = categoriasLaterais.find(c => c.chave === chave);
+
+  const { error } = await db
+    .from("categorias_laterais")
+    .delete()
+    .eq("chave", chave)
+    .eq("sistema", false);
+
+  if(error){
+    alert(error.message);
+    return;
+  }
+
+  await criarLog(`Categoria lateral excluída: ${cat ? cat.nome : chave}`);
+  await carregarCategorias();
 
   if(paginaAtual === chave){
     abrir("angels");
@@ -836,26 +885,40 @@ function aplicarNomesCategorias(){
   }
 }
 
-function salvarNomesCategorias(){
-  const nomes = {
-    angels: nomeCatAngels.value.trim() || NOMES_CATEGORIAS_PADRAO.angels,
-    recrutamento: nomeCatRecrutamento.value.trim() || NOMES_CATEGORIAS_PADRAO.recrutamento,
-    elite: nomeCatElite.value.trim() || NOMES_CATEGORIAS_PADRAO.elite,
-    eventos: nomeCatEventos.value.trim() || NOMES_CATEGORIAS_PADRAO.eventos,
-    sorteio: nomeCatSorteio.value.trim() || NOMES_CATEGORIAS_PADRAO.sorteio,
-    virtus: nomeCatVirtus.value.trim() || NOMES_CATEGORIAS_PADRAO.virtus,
-    logs: nomeCatLogs.value.trim() || NOMES_CATEGORIAS_PADRAO.logs,
-    gerenciar: nomeCatGerenciar.value.trim() || NOMES_CATEGORIAS_PADRAO.gerenciar
-  };
+async function salvarNomesCategorias(){
+  const atualizados = [
+    { chave: "angels", nome: nomeCatAngels.value.trim() || NOMES_CATEGORIAS_PADRAO.angels, sistema: true, ordem: 1, visivel: true },
+    { chave: "recrutamento", nome: nomeCatRecrutamento.value.trim() || NOMES_CATEGORIAS_PADRAO.recrutamento, sistema: true, ordem: 2, visivel: true },
+    { chave: "elite", nome: nomeCatElite.value.trim() || NOMES_CATEGORIAS_PADRAO.elite, sistema: true, ordem: 3, visivel: true },
+    { chave: "eventos", nome: nomeCatEventos.value.trim() || NOMES_CATEGORIAS_PADRAO.eventos, sistema: true, ordem: 4, visivel: true },
+    { chave: "sorteio", nome: nomeCatSorteio.value.trim() || NOMES_CATEGORIAS_PADRAO.sorteio, sistema: true, ordem: 5, visivel: true },
+    { chave: "virtus", nome: nomeCatVirtus.value.trim() || NOMES_CATEGORIAS_PADRAO.virtus, sistema: true, ordem: 6, visivel: true },
+    { chave: "logs", nome: nomeCatLogs.value.trim() || NOMES_CATEGORIAS_PADRAO.logs, sistema: true, ordem: 900, visivel: true },
+    { chave: "gerenciar", nome: nomeCatGerenciar.value.trim() || NOMES_CATEGORIAS_PADRAO.gerenciar, sistema: true, ordem: 901, visivel: true }
+  ];
 
-  localStorage.setItem("nextage_nomes_categorias", JSON.stringify(nomes));
+  const { error } = await db
+    .from("categorias_laterais")
+    .upsert(atualizados, { onConflict: "chave" });
+
+  if(error){
+    alert("Erro ao salvar nomes. Confira se a tabela categorias_laterais foi criada no Supabase.");
+    return;
+  }
+
+  await criarLog("Nomes das categorias laterais atualizados");
+  await carregarCategorias();
   aplicarNomesCategorias();
-  alert("Nomes das categorias salvos neste navegador.");
+  alert("Nomes das categorias salvos.");
   renderGerenciar();
 }
 
 
 async function carregarConfig(){
+  if(!categoriasLaterais.length){
+    await carregarCategorias();
+  }
+
   const { data } = await db
     .from("configuracoes")
     .select("*")
